@@ -1,0 +1,134 @@
+---
+title: "Mapa Participación Elecciones 2016"
+author: "Esteban Moro"
+date: "4/10/2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE,cache=T)
+library(tidyverse)
+library(leaflet)
+library(rgdal)
+```
+
+## Introduction
+
+This script builds the map of participation by census area similar to the one created by Kiko Llaneras and Nacho Carretero in this article 
+https://elpais.com/politica/2019/03/28/actualidad/1553783809_455746.html
+
+We will use R and specially the `leaflet` package
+
+
+## Data
+
+To build the map we need:
+
+### Participation data
+
+Participation data that we can download from [Ministerio del Interior](http://www.infoelectoral.mir.es/infoelectoral/min/areaDescarga.html). Go to the bottom of the page ("Extracción de Datos") and choose "Congreso" and "Junio 2016". The webpage will reload and different links will appear. Click on "Mesa".
+
+The downloaded folder `02201606_MESA` contains different files with data about participation and results for the different parties (have a look at the description in the `FICHEROS.doc` file. The one we will use is `09021606.DAT` which contains the data of participation by poll station.
+
+It has fixed width for each field:
+
+```{r}
+participacion <- read.fwf("./data/02201606_MESA/09021606.DAT",	
+                          widths=c(2,4,2,1,	
+                                   2,2,3,2,4,1,	
+                                   7,7,7,7,7,7,7,7,7,7,7,	
+                                   1),	
+                          colClasses=c(rep("numeric",4),	
+                                       rep("character",6),	
+                                       rep("numeric",11),	
+                                       "character"))
+```
+
+and name the colums (see again `FICHEROS.doc` for their description)
+
+```{r}
+colnames(participacion) <- c("tipo","year","month","vuelta",	
+                          "ccaa","provincia","municipio","distrito","seccion","mesa",	
+                          "censo","censo_escrutinio","censo_cere","total_cere",	
+                          "votantes_primer","votantes_segundo",	
+                          "blanco","nulos","votos","afirmativos","negativos",	
+                          "datos_oficiales")	
+```
+
+Here is how it looks
+
+```{r}
+head(participacion)
+```
+
+We are going to analyze the participation by census area (sección censal). To do that we have to aggregate the poll stations (mesas) that belong to the same census area. We introduce a new field which is a unique number for each census area
+
+```{r}
+participacion$CUSEC <- paste0(participacion$provincia,
+                              participacion$municipio,
+                              participacion$distrito,
+                              participacion$seccion)	
+participacion$CUSEC <- str_trim(participacion$CUSEC)	
+```
+
+and finally aggregate by census area and aalculate participation percentage in each of them.
+
+```{r}
+df.participacion <- participacion %>% 	
+  group_by(provincia,municipio,distrito,seccion,CUSEC) %>% 	
+  summarize(total_votos=sum(votos),total_censo=sum(censo)) %>%	
+  mutate(participacion = total_votos/total_censo*100)	
+```
+
+### Census areas boundaries
+
+In the map we are going to show each census area and its participation. We need the boundaries (polygons) for each of them. We can download the polygons in the shapefile (SHP) format from from the INE http://www.ine.es/censos2011_datos/cen11_datos_resultados_seccen.htm
+
+Let's import them
+```{r,message=F}
+require(rgdal)	
+secciones <- readOGR(dsn="./data/cartografia_censo2011_nacional/",layer="SECC_CPV_E_20111101_01_R_INE",verbose = F)	
+```
+
+And change their geographical projection for its use later
+
+```{r}
+WGS84 <- CRS("+proj=longlat +ellps=WGS84 +datum=WGS84 +no_defs")	
+secciones <- spTransform(secciones,CRSobj=WGS84)	
+```
+
+## Merge data
+
+Finally we are going to merge the participation data with the geographical areas. Note that each census area in the `secciones` object is given a unique `CUSEC` id which is the same we used for the participation data. So we merge both datasets using it.	
+
+```{r}
+secciones <- merge(secciones,df.participacion,by="CUSEC")	
+```
+
+
+## Visualize the data
+
+To visualize it we are going to use the `leaflet` library and Carto Positron tiles. Let's do it only for the Madrid province (code "28")
+
+```{r}
+smad <- secciones[secciones$CPRO=="28",]	
+pal <- colorBin(palette = "BrBG", domain = smad$participacion, bins = 10)	
+smad %>% leaflet() %>% addProviderTiles(providers$CartoDB.Positron) %>%	
+  addPolygons(fillColor = ~ pal(participacion),fillOpacity = 0.5,color = "white",weight = 1,	
+              label = ~ paste0(round(participacion,2),"%")) %>% 	
+  addLegend("bottomright", pal = pal, values = ~participacion)	
+```
+
+Or the provinces in Catalonia
+
+```{r}
+cod_cataluna <- c("08","17","25","43")
+scat <- secciones[secciones$CPRO %in% cod_cataluna,]
+pal <- colorBin(palette = "BrBG", domain = scat$participacion, bins = 10)	
+scat %>% leaflet() %>% addProviderTiles(providers$CartoDB.Positron) %>%	
+  addPolygons(fillColor = ~ pal(participacion),fillOpacity = 0.5,color = "white",weight = 1,	
+              label = ~ paste0(round(participacion,2),"%")) %>% 	
+  addLegend("bottomright", pal = pal, values = ~participacion)
+
+```
+
